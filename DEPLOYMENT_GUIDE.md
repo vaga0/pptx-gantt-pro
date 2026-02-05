@@ -54,8 +54,8 @@ Description=Streamlit PPTX Gantt Service (Web Mode)
 After=network.target
 
 [Service]
-# 建議使用一般使用者，例如 magento 或 ubuntu
-User=magento
+# 建議使用一般使用者，例如 ubuntu
+User=ubuntu
 WorkingDirectory=/opt/pptxgantt
 
 # [關鍵] 啟動指令：加入 -- --web 參數啟用多用戶 Web 模式
@@ -103,8 +103,9 @@ sudo systemctl restart nginx
 
 - **Local Mode** (移除 start 指令中的 `-- --web`):
   - 伺服器會嘗試寫入 `tasks.json`。
-  - 需確保 Service User (如 magento) 對該檔案有寫入權限：
+  - 需確保 Service User (如 ubuntu) 對該檔案有寫入權限：
     ```bash
-    sudo chown magento:magento /opt/pptxgantt/tasks.json
+    sudo chown ubuntu:ubuntu /opt/pptxgantt/tasks.json
     sudo chmod 664 /opt/pptxgantt/tasks.json
     ```
+
