@@ -1,15 +1,27 @@
-
 import streamlit as st
 import pandas as pd
 import datetime
 import pptx_generator
+import sys
 import os
+import io
 import json
 
 # --- Persistence Logic ---
 DATA_FILE = "tasks.json"
 
-def load_data():
+def determine_mode():
+    """
+    Detects running mode via CLI argument '--web'.
+    Usage: streamlit run gantt_app.py -- --web
+    """
+    if '--web' in sys.argv:
+        return 'web'
+    return 'local'
+
+APP_MODE = determine_mode()
+
+def load_data_local():
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -19,7 +31,7 @@ def load_data():
             st.error(f"讀取資料失敗: {e}")
     return "專案進度報告", str(datetime.date.today()), []
 
-def save_data(topic, base_date, tasks):
+def save_data_local(topic, base_date, tasks):
     data = {
         "topic": topic,
         "base_date": str(base_date),
@@ -33,9 +45,7 @@ def save_data(topic, base_date, tasks):
 
 st.set_page_config(layout="wide", page_title="PPTX 甘特圖產生器")
 
-# Hide Streamlit menu (Keep Hamburger as requested: Rerun/Settings, hide Footer/Deploy)
-# "Record a screencast": Streamlit builtin to record screen video.
-# "Clear cache": Clears internal cache (rarely needed for this app).
+# Hide Streamlit menu
 hide_menu_style = """
         <style>
         footer {visibility: hidden;}
@@ -45,9 +55,13 @@ hide_menu_style = """
 st.markdown(hide_menu_style, unsafe_allow_html=True)
 
 # --- Session State Initialization ---
-# Load data ONCE on startup
 if 'data_loaded' not in st.session_state:
-    saved_topic, saved_date, saved_tasks = load_data()
+    if APP_MODE == 'local':
+        saved_topic, saved_date, saved_tasks = load_data_local()
+    else:
+        # Web Mode defaults
+        saved_topic, saved_date, saved_tasks = "專案進度報告", str(datetime.date.today()), []
+        
     st.session_state['topic'] = saved_topic
     st.session_state['base_date'] = datetime.datetime.strptime(saved_date, "%Y-%m-%d").date()
     st.session_state['tasks'] = saved_tasks
@@ -68,7 +82,11 @@ if 'edit_index' not in st.session_state: st.session_state['edit_index'] = None
 
 # --- Callbacks ---
 def auto_save():
-    save_data(st.session_state['topic'], st.session_state['base_date'], st.session_state['tasks'])
+    if APP_MODE == 'local':
+        save_data_local(st.session_state['topic'], st.session_state['base_date'], st.session_state['tasks'])
+    else:
+        # Web mode: No auto-save to disk, logic relies on session state
+        pass
 
 def add_task_callback():
     new_task = {
@@ -83,54 +101,100 @@ def add_task_callback():
         'bar_text': st.session_state.new_bar_text
     }
     st.session_state['tasks'].append(new_task)
-    auto_save() # Auto Save on Add
+    auto_save() 
 
 def update_task_callback(idx, updated_task):
     st.session_state['tasks'][idx] = updated_task
     st.session_state['edit_index'] = None
-    auto_save() # Auto Save on Edit
+    auto_save()
 
 def delete_task_callback(idx):
     st.session_state['tasks'].pop(idx)
     if st.session_state['edit_index'] == idx:
         st.session_state['edit_index'] = None
-    auto_save() # Auto Save on Delete
+    auto_save()
 
 def reset_input_fields():
-    # Only reset Session State keys for input fields
     for k, v in defaults.items():
         st.session_state[k] = v
 
-def generate_pptx():
-    if not st.session_state['tasks']:
-        st.error("請先新增任務")
-        return
+def handle_file_upload():
+    uploaded_file = st.session_state.get('uploaded_project')
+    if uploaded_file is not None:
+        try:
+            data = json.load(uploaded_file)
+            st.session_state['topic'] = data.get('topic', '專案進度報告')
+            # Handle date string conversion
+            b_date = data.get('base_date', str(datetime.date.today()))
+            st.session_state['base_date'] = datetime.datetime.strptime(b_date, "%Y-%m-%d").date()
+            st.session_state['tasks'] = data.get('tasks', [])
+            st.success("專案檔讀取成功！")
+        except Exception as e:
+            st.error(f"讀取失敗: {e}")
+
+def get_project_json():
+    data = {
+        'topic': st.session_state['topic'],
+        'base_date': st.session_state['base_date'].strftime('%Y-%m-%d'),
+        'tasks': st.session_state['tasks']
+    }
+    return json.dumps(data, ensure_ascii=False, indent=4)
+
+def generate_pptx_buffer():
+    # Save before generate
+    auto_save() 
     
-    # Save before generate just in case
-    auto_save()
     data = {
         'topic': st.session_state['topic'],
         'base_date': st.session_state['base_date'].strftime('%Y-%m-%d'),
         'tasks': st.session_state['tasks']
     }
     try:
-        output_path = "output_gantt.pptx"
         prs = pptx_generator.create_pptx(data)
-        prs.save(output_path)
-        with open(output_path, "rb") as f:
-            st.download_button("下載 .pptx", f, "gantt.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", key='top_dl')
-        st.success("完成！")
+        buffer = io.BytesIO()
+        prs.save(buffer)
+        buffer.seek(0)
+        return buffer
     except Exception as e:
         st.error(f"錯誤: {e}")
+        return None
 
 # --- UI Layout ---
-st.title("PPTX 甘特圖產生器")
+st.title(f"PPTX 甘特圖產生器 ({APP_MODE.upper()} Mode)")
+
+# Sidebar for File Operations
+with st.sidebar:
+    st.header("🗂️ 檔案操作")
+    
+    # 1. Download JSON (Always available)
+    json_str = get_project_json()
+    st.download_button(
+        label="📥 下載專案檔 (.json)",
+        data=json_str,
+        file_name="gantt_project.json",
+        mime="application/json",
+        help="下載目前的專案進度，以後可以使用「上傳專案檔」還原。"
+    )
+    
+    st.markdown("---")
+    
+    # 2. Upload JSON (Web Mode only, or convenience for Local)
+    # We allow it in Local mode too, as it's useful to import others' files
+    st.subheader("📤 上傳專案檔")
+    st.file_uploader(
+        "選擇 .json 檔", 
+        type=['json'], 
+        key='uploaded_project', 
+        on_change=handle_file_upload
+    )
+    
+    if APP_MODE == 'local':
+        st.info("💡 Local Mode: 資料會自動儲存至 tasks.json")
+    else:
+        st.warning("⚠️ Web Mode: 資料不會自動儲存。請務必在關閉前下載專案檔！")
 
 col1, col2, col3 = st.columns([3, 1.5, 1.5])
 with col1:
-    # Bind directly to session_state keys not supported fully for text_input without on_change 
-    # to update other vars. But here we just want to load initial.
-    # We use key='topic_input' and on_change to sync.
     def update_meta():
         st.session_state['topic'] = st.session_state.topic_input
         st.session_state['base_date'] = st.session_state.date_input
@@ -140,10 +204,25 @@ with col1:
 with col2:
     st.date_input("基準日期", value=st.session_state['base_date'], key="date_input", on_change=update_meta)
 with col3:
-    st.write("") # Spacer to align button with inputs (inputs have label height)
     st.write("") 
-    if st.button("🚀 產生 PPTX", type="primary", use_container_width=True):
-        generate_pptx()
+    st.write("") 
+    
+    # Prepare Buffer for Download
+    # Note: Generating on every rerun might be heavy if complex, 
+    # but for this app it's fine. Alternatively, trigger generation on click is harder with st.download_button logic.
+    # We use a button to trigger 'generate' logic but with Streamlit, download_button needs data ready.
+    # So we can make a dynamic generator callback.
+    
+    pptx_buffer = generate_pptx_buffer()
+    if pptx_buffer:
+        st.download_button(
+            label="🚀 產生 PPTX",
+            data=pptx_buffer,
+            file_name="output_gantt.pptx",
+            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            type="primary",
+            use_container_width=True
+        )
 
 st.markdown("---")
 
@@ -159,7 +238,7 @@ if st.session_state['show_add_task']:
 else:
     if col_add_btn.button("＋ 新增任務", type="primary"):
         st.session_state['show_add_task'] = True
-        st.session_state['edit_index'] = None # Close edit if open
+        st.session_state['edit_index'] = None 
         st.rerun()
 
 if st.session_state['show_add_task']:
@@ -188,11 +267,9 @@ if st.session_state['show_add_task']:
 
 st.markdown("---")
 
-
-
 # --- Task List ---
 if st.session_state['tasks']:
-    # Headers: Subject, User, Time, Status, Action
+    # Headers
     h_cols = st.columns([2, 1, 2, 1, 1])
     h_cols[0].write("主題")
     h_cols[1].write("用戶")
@@ -201,7 +278,6 @@ if st.session_state['tasks']:
     h_cols[4].write("操作")
     
     for i, task in enumerate(st.session_state['tasks']):
-        # Separator line (minimal)
         st.markdown("<hr style='margin: 5px 0; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
         
         if st.session_state['edit_index'] == i:
@@ -243,29 +319,20 @@ if st.session_state['tasks']:
         else:
             # --- View Mode (Compact) ---
             cols = st.columns([2, 1, 2, 1, 1])
-            
-            # 1. Subject
             cols[0].write(f"**{task.get('subject','')}**")
-            
-            # 2. User
             cols[1].write(f"{task['user']}\n({task['it_contact']})")
-            
-            # 3. Time
             cols[2].write(f"{task['start_date']} ~ {task['end_date']}")
             if task.get('bar_text'): cols[2].caption(f"Bar: {task.get('bar_text')}")
-            
-            # 4. Status
             cols[3].write(f"{task['status']}")
             
-            # 5. Action
             btn_c1, btn_c2 = cols[4].columns(2)
             if btn_c1.button("✏️", key=f"edit_{i}"):
                 st.session_state['edit_index'] = i
-                st.session_state['show_add_task'] = False # Hide add form when editing
+                st.session_state['show_add_task'] = False 
                 st.rerun()
             if btn_c2.button("🗑️", key=f"del_{i}"):
                 delete_task_callback(i)
                 st.rerun()
 
 else:
-    st.info("尚無資料，請點擊上方「＋ 新增任務」。")
+    st.info("尚無資料，請點擊上方「＋ 新增任務」或從左側上傳專案檔。")
