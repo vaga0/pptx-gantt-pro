@@ -1,0 +1,16 @@
+# Python 暫存檔
+__pycache__/
+*.py[cod]
+*$py.class
+# 封裝後的產出 (PyInstaller)
+build/
+dist/
+*.spec
+# Streamlit 暫存
+.streamlit/
+# 本地資料 (視需求而定，若不想同步任務資料則排除)
+tasks.json
+output_gantt.pptx
+# 虛擬環境
+venv/
+.venv/
